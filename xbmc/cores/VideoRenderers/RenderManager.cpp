@@ -275,6 +275,7 @@ bool CXBMCRenderManager::Configure(unsigned int width, unsigned int height, unsi
     m_presentevent.Set();
     ResetRenderBuffer();
     EnableBuffering(buffering);
+    m_bHasPrepared = false;
   }
 
   return result;
@@ -700,6 +701,8 @@ bool CXBMCRenderManager::Prepare()
     if (!m_pRenderer)
       return false;
 
+    m_bHasPrepared = true;
+
     if (m_presentstep == PRESENT_IDLE)
       PrepareNextRender();
 
@@ -1113,6 +1116,16 @@ void CXBMCRenderManager::NotifyDisplayFlip()
   if (!m_pRenderer)
     return;
 
+  if (!m_bIsStarted)
+    return;
+
+  // advance buffers in case of video is not shown
+  if (!m_bHasPrepared)
+  {
+    if (Prepare())
+      m_presentstep = PRESENT_IDLE;
+  }
+
   if (m_iNumRenderBuffers >= 3)
   {
     int last = m_iDisplayedRenderBuffer;
@@ -1133,6 +1146,7 @@ void CXBMCRenderManager::NotifyDisplayFlip()
     }
   }
 
+  m_bHasPrepared = false;
   lock.Leave();
   m_flipEvent.Set();
 }
