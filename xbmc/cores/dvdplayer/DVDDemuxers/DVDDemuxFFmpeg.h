@@ -89,7 +89,7 @@ public:
   CDVDDemuxFFmpeg();
   virtual ~CDVDDemuxFFmpeg();
 
-  bool Open(CDVDInputStream* pInput);
+  bool Open(CDVDInputStream* pInput, bool streaminfo = true);
   void Dispose();
   void Reset();
   void Flush();
@@ -162,5 +162,6 @@ protected:
 
   bool m_bPtsWrap, m_bPtsWrapChecked;
   int64_t m_iStartTime, m_iMaxTime, m_iEndTime;
+  bool m_streaminfo;
 };
 
