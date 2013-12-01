@@ -40,7 +40,7 @@ CAEChannelInfo::~CAEChannelInfo()
 {
 }
 
-void CAEChannelInfo::ResolveChannels(const CAEChannelInfo& rhs)
+void CAEChannelInfo::ResolveChannels(const CAEChannelInfo& rhs, bool mix)
 {
   /* mono gets upmixed to dual mono */
   if (m_channelCount == 1 && m_channels[0] == AE_CH_FC)
@@ -100,6 +100,16 @@ void CAEChannelInfo::ResolveChannels(const CAEChannelInfo& rhs)
     if (found)
       newInfo += m_channels[i];
   }
+
+  if (!mix)
+  {
+    *this = newInfo;
+    return;
+  }
+
+  // we let the sink do the mapping later on
+  if (m_channelCount == 8 && m_channelCount == rhs.Count())
+    return;
 
   /* we need to ensure we end up with rear or side channels for downmix to work */
   if (srcHasSL && !dstHasSL && dstHasRL)
