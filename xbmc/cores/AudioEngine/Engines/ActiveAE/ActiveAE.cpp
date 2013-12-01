@@ -968,7 +968,7 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
     {
       outputFormat = m_sinkFormat;
       outputFormat.m_channelLayout = m_sinkRequestFormat.m_channelLayout;
-      outputFormat.m_channelLayout.ResolveChannels(m_sinkFormat.m_channelLayout);
+      outputFormat.m_channelLayout.ResolveChannels(m_sinkFormat.m_channelLayout, false);
       outputFormat.m_dataFormat = AE_FMT_FLOAT;
       outputFormat.m_frameSize = outputFormat.m_channelLayout.Count() *
                                  (CAEUtil::DataFormatToBits(outputFormat.m_dataFormat) >> 3);
@@ -1325,7 +1325,7 @@ void CActiveAE::ApplySettingsToFormat(AEAudioFormat &format, AudioSettings &sett
       if (m_settings.config == AE_CONFIG_FIXED || (settings.stereoupmix && format.m_channelLayout.Count() <= 2))
         format.m_channelLayout = stdLayout;
       else
-        format.m_channelLayout.ResolveChannels(stdLayout);;
+        format.m_channelLayout.ResolveChannels(stdLayout);
     }
     // don't change from multi to stereo in AUTO mode
     else if ((settings.config == AE_CONFIG_AUTO) &&

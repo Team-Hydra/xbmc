@@ -86,7 +86,7 @@ public:
   operator std::string() const;
 
   /* remove any channels that dont exist in the provided info */
-  void ResolveChannels(const CAEChannelInfo& rhs);
+  void ResolveChannels(const CAEChannelInfo& rhs, bool mix = true);
   void Reset();
   inline unsigned int Count() const { return m_channelCount; }
   static const char* GetChName(const enum AEChannel ch);
