@@ -51,8 +51,6 @@ void CAEChannelInfo::ResolveChannels(const CAEChannelInfo& rhs, bool mix)
     return;
   }
 
-  return;
-
   bool srcHasSL = false;
   bool srcHasSR = false;
   bool srcHasRL = false;
