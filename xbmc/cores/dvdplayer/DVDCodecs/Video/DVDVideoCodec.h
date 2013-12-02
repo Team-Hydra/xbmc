@@ -39,8 +39,10 @@ namespace XVBA { class CXvbaRenderPicture; }
 class COpenMax;
 class COpenMaxVideo;
 struct OpenMaxVideoBuffer;
-class CStageFrightVideo;
+class CDVDVideoCodecStageFright;
+class CDVDMediaCodecInfo;
 typedef void* EGLImageKHR;
+
 
 // should be entirely filled by all codecs
 struct DVDVideoPicture
@@ -77,8 +79,12 @@ struct DVDVideoPicture
     };
 
     struct {
-      CStageFrightVideo* stf;
+      CDVDVideoCodecStageFright* stf;
       EGLImageKHR eglimg;
+    };
+
+    struct {
+      CDVDMediaCodecInfo *mediacodec;
     };
   };
 

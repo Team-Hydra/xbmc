@@ -674,7 +674,7 @@ inline void PAPlayer::ProcessStreams(double &delay, double &buffer)
     }
 
     /* it is time to start playing the next stream? */
-    if (si->m_playNextAtFrame > 0 && !si->m_playNextTriggered && si->m_framesSent >= si->m_playNextAtFrame)
+    if (si->m_playNextAtFrame > 0 && !si->m_playNextTriggered && !m_continueStream && si->m_framesSent >= si->m_playNextAtFrame)
     {
       if (!si->m_prepareTriggered)
       {
@@ -948,21 +948,13 @@ int PAPlayer::GetCacheLevel() const
   return m_playerGUIData.m_cacheLevel;
 }
 
-int PAPlayer::GetBitsPerSample()
-{
-  return m_playerGUIData.m_bitsPerSample;
-}
-
-int PAPlayer::GetSampleRate()
-{
-  return m_playerGUIData.m_sampleRate;
-}
-
 void PAPlayer::GetAudioStreamInfo(int index, SPlayerAudioStreamInfo &info)
 {
   info.bitrate = m_playerGUIData.m_audioBitrate;
   info.channels = m_playerGUIData.m_channelCount;
   info.audioCodecName = m_playerGUIData.m_codec;
+  info.samplerate = m_playerGUIData.m_sampleRate;
+  info.bitspersample = m_playerGUIData.m_bitsPerSample;
 }
 
 bool PAPlayer::CanSeek()

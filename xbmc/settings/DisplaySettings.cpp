@@ -28,7 +28,7 @@
 #include "guilib/LocalizeStrings.h"
 #include "guilib/StereoscopicsManager.h"
 #include "settings/AdvancedSettings.h"
-#include "settings/Setting.h"
+#include "settings/lib/Setting.h"
 #include "settings/Settings.h"
 #include "threads/SingleLock.h"
 #include "utils/log.h"
@@ -264,6 +264,28 @@ bool CDisplaySettings::OnSettingChanging(const CSetting *setting)
       else
         m_resolutionChangeAborted = false;
     }
+  }
+  else if (settingId == "videoscreen.monitor")
+  {
+    g_Windowing.UpdateResolutions();
+    RESOLUTION newRes = GetResolutionForScreen();
+
+    SetCurrentResolution(newRes, false);
+    g_graphicsContext.SetVideoResolution(newRes, true);
+
+    if (!m_resolutionChangeAborted)
+    {
+      bool cancelled = false;
+      if (!CGUIDialogYesNo::ShowAndGetInput(13110, 13111, 20022, 20022, -1, -1, cancelled, 10000))
+      {
+        m_resolutionChangeAborted = true;
+        return false;
+      }
+    }
+    else
+      m_resolutionChangeAborted = false;
+
+    return true;
   }
   else if (settingId == "videoscreen.monitorsingle")
   {
@@ -688,9 +710,11 @@ void CDisplaySettings::SettingOptionsMonitorsFiller(const CSetting *setting, std
 #if defined(HAS_GLX)
   std::vector<CStdString> monitors;
   g_Windowing.GetConnectedOutputs(&monitors);
+  std::string currentMonitor = CSettings::Get().GetString("videoscreen.monitor");
   for (unsigned int i=0; i<monitors.size(); ++i)
   {
-    if(CDisplaySettings::Get().GetResolutionInfo(RES_DESKTOP).strOutput.Equals(monitors[i]))
+    if(currentMonitor.compare("Default") != 0 &&
+       CDisplaySettings::Get().GetResolutionInfo(RES_DESKTOP).strOutput.Equals(monitors[i]))
     {
       current = monitors[i];
     }

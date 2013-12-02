@@ -327,9 +327,10 @@
 #define ACTION_STEREOMODE_TOGGLE      237 // turns 3d mode on/off
 #define ACTION_STEREOMODE_SELECT      238
 #define ACTION_STEREOMODE_TOMONO      239
+#define ACTION_STEREOMODE_SET         240
 
-#define ACTION_SETTINGS_RESET         240
-#define ACTION_SETTINGS_LEVEL_CHANGE  241
+#define ACTION_SETTINGS_RESET         241
+#define ACTION_SETTINGS_LEVEL_CHANGE  242
 
 // touch actions
 #define ACTION_TOUCH_TAP              401
@@ -368,6 +369,8 @@
 #define ICON_TYPE_WEATHER       107
 #define ICON_TYPE_SETTINGS      109
 
+#ifndef SWIG
+
 class CKey;
 
 /*!
@@ -381,6 +384,7 @@ public:
   CAction(int actionID, wchar_t unicode);
   CAction(int actionID, unsigned int state, float posX, float posY, float offsetX, float offsetY, const CStdString &name = "");
   CAction(int actionID, const CStdString &name, const CKey &key);
+  CAction(int actionID, const std::string &name);
 
   /*! \brief Identifier of the action
    \return id of the action
@@ -522,5 +526,7 @@ private:
   float m_repeat; // time since last keypress
   bool m_fromService;
 };
+#endif //undef SWIG
+
 #endif
 

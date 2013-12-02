@@ -56,6 +56,7 @@ CActiveAEStream::CActiveAEStream(AEAudioFormat *format)
   m_leftoverBuffer = new uint8_t[m_format.m_frameSize];
   m_leftoverBytes = 0;
   m_forceResampler = false;
+  m_streamResampleRatio = 1.0;
 }
 
 CActiveAEStream::~CActiveAEStream()

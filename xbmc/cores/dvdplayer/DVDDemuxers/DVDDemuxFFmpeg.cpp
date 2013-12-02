@@ -42,12 +42,16 @@
 #include "settings/AdvancedSettings.h"
 #include "settings/Settings.h"
 #include "filesystem/File.h"
+#include "filesystem/CurlFile.h"
 #include "filesystem/Directory.h"
 #include "utils/log.h"
 #include "threads/Thread.h"
 #include "threads/SystemClock.h"
 #include "utils/TimeUtils.h"
+#include "utils/StringUtils.h"
 #include "URL.h"
+
+#define FF_MAX_EXTRADATA_SIZE ((1 << 28) - FF_INPUT_BUFFER_PADDING_SIZE)
 
 void CDemuxStreamAudioFFmpeg::GetStreamInfo(std::string& strInfo)
 {
@@ -121,10 +125,8 @@ void ff_avutil_log(void* ptr, int level, const char* format, va_list va)
     default            : type = LOGDEBUG;   break;
   }
 
-  CStdString message, prefix;
-  message.FormatV(format, va);
-
-  prefix.Format("ffmpeg[%X]: ", threadId);
+  CStdString message = StringUtils::FormatV(format, va);
+  CStdString prefix = StringUtils::Format("ffmpeg[%X]: ", threadId);
   if(avc)
   {
     if(avc->item_name)
@@ -153,7 +155,7 @@ static void ff_flush_avutil_log_buffers(void)
      add a new buffer next time it writes to the log */
   std::map<uintptr_t, CStdString>::iterator it;
   for (it = g_logbuffer.begin(); it != g_logbuffer.end(); )
-    if ((*it).second.IsEmpty())
+    if ((*it).second.empty())
       g_logbuffer.erase(it++);
     else
       ++it;
@@ -217,6 +219,7 @@ CDVDDemuxFFmpeg::CDVDDemuxFFmpeg() : CDVDDemux()
   m_program = UINT_MAX;
   m_pkt.result = -1;
   memset(&m_pkt.pkt, 0, sizeof(AVPacket));
+  m_streaminfo = true; /* set to true if we want to look for streams before playback */
 }
 
 CDVDDemuxFFmpeg::~CDVDDemuxFFmpeg()
@@ -237,10 +240,11 @@ bool CDVDDemuxFFmpeg::Aborted()
   return false;
 }
 
-bool CDVDDemuxFFmpeg::Open(CDVDInputStream* pInput)
+bool CDVDDemuxFFmpeg::Open(CDVDInputStream* pInput, bool streaminfo)
 {
   AVInputFormat* iformat = NULL;
   std::string strFile;
+  m_streaminfo = streaminfo;
   m_iCurrentPts = DVD_NOPTS_VALUE;
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_program = UINT_MAX;
@@ -258,8 +262,6 @@ bool CDVDDemuxFFmpeg::Open(CDVDInputStream* pInput)
 
   m_pInput = pInput;
   strFile = m_pInput->GetFileName();
-
-  bool streaminfo = true; /* set to true if we want to look for streams before playback*/
 
   if( m_pInput->GetContent().length() > 0 )
   {
@@ -307,7 +309,7 @@ bool CDVDDemuxFFmpeg::Open(CDVDInputStream* pInput)
     }
     if (result < 0 && m_dllAvFormat.avformat_open_input(&m_pFormatContext, strFile.c_str(), iformat, &options) < 0 )
     {
-      CLog::Log(LOGDEBUG, "Error, could not open file %s", strFile.c_str());
+      CLog::Log(LOGDEBUG, "Error, could not open file %s", CURL::GetRedacted(strFile).c_str());
       Dispose();
       m_dllAvUtil.av_dict_free(&options);
       return false;
@@ -352,7 +354,7 @@ bool CDVDDemuxFFmpeg::Open(CDVDInputStream* pInput)
         pd.buf_size = m_dllAvFormat.avio_read(m_ioContext, pd.buf, m_ioContext->max_packet_size ? m_ioContext->max_packet_size : m_ioContext->buffer_size);
         if (pd.buf_size <= 0)
         {
-          CLog::Log(LOGERROR, "%s - error reading from input stream, %s", __FUNCTION__, strFile.c_str());
+          CLog::Log(LOGERROR, "%s - error reading from input stream, %s", __FUNCTION__, CURL::GetRedacted(strFile).c_str());
           return false;
         }
         memset(pd.buf+pd.buf_size, 0, AVPROBE_PADDING_SIZE);
@@ -415,7 +417,7 @@ bool CDVDDemuxFFmpeg::Open(CDVDInputStream* pInput)
 
       if (!iformat)
       {
-        CLog::Log(LOGERROR, "%s - error probing input format, %s", __FUNCTION__, strFile.c_str());
+        CLog::Log(LOGERROR, "%s - error probing input format, %s", __FUNCTION__, CURL::GetRedacted(strFile).c_str());
         return false;
       }
       else
@@ -432,7 +434,7 @@ bool CDVDDemuxFFmpeg::Open(CDVDInputStream* pInput)
 
     if (m_dllAvFormat.avformat_open_input(&m_pFormatContext, strFile.c_str(), iformat, NULL) < 0)
     {
-      CLog::Log(LOGERROR, "%s - Error, could not open file %s", __FUNCTION__, strFile.c_str());
+      CLog::Log(LOGERROR, "%s - Error, could not open file %s", __FUNCTION__, CURL::GetRedacted(strFile).c_str());
       Dispose();
       return false;
     }
@@ -446,22 +448,26 @@ bool CDVDDemuxFFmpeg::Open(CDVDInputStream* pInput)
   if (iformat && (strcmp(iformat->name, "mjpeg") == 0) && m_ioContext->seekable == 0)
     m_pFormatContext->max_analyze_duration = 500000;
 
+  bool short_analyze = false;
+  if (iformat && (strcmp(iformat->name, "mpegts") == 0))
+  {
+    m_pFormatContext->max_analyze_duration = 500000;
+    short_analyze = true;
+  }
+
   // we need to know if this is matroska or avi later
   m_bMatroska = strncmp(m_pFormatContext->iformat->name, "matroska", 8) == 0;	// for "matroska.webm"
   m_bAVI = strcmp(m_pFormatContext->iformat->name, "avi") == 0;
 
-  if (streaminfo)
+  if (m_streaminfo)
   {
-    /* too speed up dvd switches, only analyse very short */
-    if(m_pInput->IsStreamType(DVDSTREAM_TYPE_DVD))
-      m_pFormatContext->max_analyze_duration = 500000;
-
+    m_pFormatContext->max_analyze_duration = 500000;
 
     CLog::Log(LOGDEBUG, "%s - avformat_find_stream_info starting", __FUNCTION__);
     int iErr = m_dllAvFormat.avformat_find_stream_info(m_pFormatContext, NULL);
     if (iErr < 0)
     {
-      CLog::Log(LOGWARNING,"could not find codec parameters for %s", strFile.c_str());
+      CLog::Log(LOGWARNING,"could not find codec parameters for %s", CURL::GetRedacted(strFile).c_str());
       if (m_pInput->IsStreamType(DVDSTREAM_TYPE_DVD)
       ||  m_pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY)
       || (m_pFormatContext->nb_streams == 1 && m_pFormatContext->streams[0]->codec->codec_id == AV_CODEC_ID_AC3))
@@ -475,7 +481,16 @@ bool CDVDDemuxFFmpeg::Open(CDVDInputStream* pInput)
       }
     }
     CLog::Log(LOGDEBUG, "%s - av_find_stream_info finished", __FUNCTION__);
+
+    if (short_analyze)
+    {
+      // make sure we start video with an i-frame
+      ResetVideoStreams();
+    }
   }
+  else
+    m_program = 0;
+
   // reset any timeout
   m_timeout.SetInfinite();
 
@@ -533,7 +548,7 @@ void CDVDDemuxFFmpeg::Reset()
 {
   CDVDInputStream* pInputStream = m_pInput;
   Dispose();
-  Open(pInputStream);
+  Open(pInputStream, m_streaminfo);
 }
 
 void CDVDDemuxFFmpeg::Flush()
@@ -623,6 +638,11 @@ AVDictionary *CDVDDemuxFFmpeg::GetFFMpegOptionsFromURL(const CURL &url)
 
     if (!headers.empty())
       m_dllAvUtil.av_dict_set(&options, "headers", headers.c_str(), 0);
+
+    std::string cookies;
+    if (XFILE::CCurlFile::GetCookies(url, cookies))
+      m_dllAvUtil.av_dict_set(&options, "cookies", cookies.c_str(), 0);
+
   }
   return options;
 }
@@ -723,25 +743,32 @@ DemuxPacket* CDVDDemuxFFmpeg::Read()
     }
     else
     {
+      ParsePacket(&m_pkt.pkt);
+
       AVStream *stream = m_pFormatContext->streams[m_pkt.pkt.stream_index];
 
-      if (m_program != UINT_MAX)
+      if (IsVideoReady())
       {
-        /* check so packet belongs to selected program */
-        for (unsigned int i = 0; i < m_pFormatContext->programs[m_program]->nb_stream_indexes; i++)
+        if (m_program != UINT_MAX)
         {
-          if(m_pkt.pkt.stream_index == (int)m_pFormatContext->programs[m_program]->stream_index[i])
+          /* check so packet belongs to selected program */
+          for (unsigned int i = 0; i < m_pFormatContext->programs[m_program]->nb_stream_indexes; i++)
           {
-            pPacket = CDVDDemuxUtils::AllocateDemuxPacket(m_pkt.pkt.size);
-            break;
+            if(m_pkt.pkt.stream_index == (int)m_pFormatContext->programs[m_program]->stream_index[i])
+            {
+              pPacket = CDVDDemuxUtils::AllocateDemuxPacket(m_pkt.pkt.size);
+              break;
+            }
           }
-        }
 
-        if (!pPacket)
-          bReturnEmpty = true;
+          if (!pPacket)
+            bReturnEmpty = true;
+        }
+        else
+          pPacket = CDVDDemuxUtils::AllocateDemuxPacket(m_pkt.pkt.size);
       }
       else
-        pPacket = CDVDDemuxUtils::AllocateDemuxPacket(m_pkt.pkt.size);
+        bReturnEmpty = true;
 
       if (pPacket)
       {
@@ -1632,7 +1659,7 @@ void CDVDDemuxFFmpeg::GetStreamCodecName(int iStreamId, CStdString &strName)
       if (strlen(fourcc) == 4)
       {
         strName = fourcc;
-        strName.MakeLower();
+        StringUtils::ToLower(strName);
         return;
       }
     }
@@ -1678,4 +1705,118 @@ bool CDVDDemuxFFmpeg::IsProgramChange()
       return true;
   }
   return false;
+}
+
+void CDVDDemuxFFmpeg::ParsePacket(AVPacket *pkt)
+{
+  AVStream *st = m_pFormatContext->streams[pkt->stream_index];
+  CDemuxStream *stream = GetStreamInternal(pkt->stream_index);
+
+  // if the stream is new, tell ffmpeg to parse the stream
+  if (!stream && !st->parser)
+  {
+    st->need_parsing = AVSTREAM_PARSE_FULL;
+  }
+
+  // split extradata
+  if(st->parser && st->parser->parser->split && !st->codec->extradata)
+  {
+    int i = st->parser->parser->split(st->codec, pkt->data, pkt->size);
+    if (i > 0 && i < FF_MAX_EXTRADATA_SIZE)
+    {
+      // Found extradata, fill it in. This will cause
+      // a new stream to be created and used.
+      st->codec->extradata_size = i;
+      st->codec->extradata = (uint8_t*)m_dllAvUtil.av_malloc(st->codec->extradata_size + FF_INPUT_BUFFER_PADDING_SIZE);
+      if (st->codec->extradata)
+      {
+        CLog::Log(LOGDEBUG, "CDVDDemuxFFmpeg::Read() fetching extradata, extradata_size(%d)", st->codec->extradata_size);
+        memcpy(st->codec->extradata, pkt->data, st->codec->extradata_size);
+        memset(st->codec->extradata + i, 0, FF_INPUT_BUFFER_PADDING_SIZE);
+      }
+      else
+      {
+        st->codec->extradata_size = 0;
+      }
+    }
+  }
+
+  // for video we need a decoder to get desired information into codec context
+  if (st->codec->codec_type == AVMEDIA_TYPE_VIDEO && st->codec->extradata &&
+      (!st->codec->width || st->codec->pix_fmt == PIX_FMT_NONE))
+  {
+    // open a decoder, it will be cleared down by ffmpeg on closing the stream
+    if (!st->codec->codec)
+    {
+      const AVCodec* codec;
+      AVDictionary *thread_opt = NULL;
+      codec = m_dllAvCodec.avcodec_find_decoder(st->codec->codec_id);
+      // Force thread count to 1 since the h264 decoder will not extract
+      // SPS and PPS to extradata during multi-threaded decoding
+      m_dllAvUtil.av_dict_set(&thread_opt, "threads", "1", 0);
+      m_dllAvCodec.avcodec_open2(st->codec, codec, &thread_opt);
+
+      m_dllAvUtil.av_dict_free(&thread_opt);
+    }
+
+    // We don't need to actually decode here
+    // we just want to transport SPS data into codec context
+    st->codec->skip_idct = AVDISCARD_ALL;
+    st->codec->skip_frame = AVDISCARD_ALL;
+    st->codec->skip_loop_filter = AVDISCARD_ALL;
+
+    // We are looking for an IDR frame
+    AVFrame picture;
+    memset(&picture, 0, sizeof(AVFrame));
+    picture.pts = picture.pkt_dts = picture.pkt_pts = picture.best_effort_timestamp = AV_NOPTS_VALUE;
+    picture.pkt_pos = -1;
+    picture.key_frame = 1;
+    picture.format = -1;
+
+    int got_picture = 0;
+    m_dllAvCodec.avcodec_decode_video2(st->codec, &picture, &got_picture, pkt);
+  }
+}
+
+bool CDVDDemuxFFmpeg::IsVideoReady()
+{
+  AVStream *st;
+  if(m_program != UINT_MAX)
+  {
+    for (unsigned int i = 0; i < m_pFormatContext->programs[m_program]->nb_stream_indexes; i++)
+    {
+      int idx = m_pFormatContext->programs[m_program]->stream_index[i];
+      st = m_pFormatContext->streams[idx];
+      if (st->codec->codec_type == AVMEDIA_TYPE_VIDEO &&
+          (!st->codec->width || st->codec->pix_fmt == PIX_FMT_NONE))
+        return false;
+    }
+  }
+  else
+  {
+    for (unsigned int i = 0; i < m_pFormatContext->nb_streams; i++)
+    {
+      st = m_pFormatContext->streams[i];
+      if (st->codec->codec_type == AVMEDIA_TYPE_VIDEO &&
+          (!st->codec->width || st->codec->pix_fmt == PIX_FMT_NONE))
+        return false;
+    }
+  }
+  return true;
+}
+
+void CDVDDemuxFFmpeg::ResetVideoStreams()
+{
+  AVStream *st;
+  for (unsigned int i = 0; i < m_pFormatContext->nb_streams; i++)
+  {
+    st = m_pFormatContext->streams[i];
+    if (st->codec->codec_type == AVMEDIA_TYPE_VIDEO)
+    {
+      if (st->codec->extradata)
+        m_dllAvUtil.av_free(st->codec->extradata);
+      st->codec->extradata = NULL;
+      st->codec->width = 0;
+    }
+  }
 }
