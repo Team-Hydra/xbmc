@@ -25,6 +25,7 @@
 #include "WinSystemX11.h"
 #include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
+#include "settings/lib/Setting.h"
 #include "guilib/GraphicContext.h"
 #include "guilib/Texture.h"
 #include "guilib/DispResource.h"
@@ -34,6 +35,7 @@
 #include "threads/SingleLock.h"
 #include "cores/VideoRenderers/RenderManager.h"
 #include "utils/TimeUtils.h"
+#include "utils/StringUtils.h"
 #include "settings/Settings.h"
 #include "windowing/WindowingFactory.h"
 #include <X11/Xatom.h>
@@ -42,7 +44,7 @@
 #include <X11/extensions/Xrandr.h>
 #endif
 
-#include "../WinEvents.h"
+#include "../WinEventsX11.h"
 #include "input/MouseStat.h"
 
 using namespace std;
@@ -147,12 +149,10 @@ bool CWinSystemX11::DestroyWindow()
     m_invisibleCursor = 0;
   }
 
-  CWinEvents::Quit();
+  CWinEventsX11Imp::Quit();
 
   XUnmapWindow(m_dpy, m_mainWindow);
   XSync(m_dpy,TRUE);
-  XUngrabKeyboard(m_dpy, CurrentTime);
-  XUngrabPointer(m_dpy, CurrentTime);
   XDestroyWindow(m_dpy, m_glWindow);
   XDestroyWindow(m_dpy, m_mainWindow);
   m_glWindow = 0;
@@ -166,8 +166,21 @@ bool CWinSystemX11::DestroyWindow()
 
 bool CWinSystemX11::ResizeWindow(int newWidth, int newHeight, int newLeft, int newTop)
 {
+  m_userOutput = CSettings::Get().GetString("videoscreen.monitor");
+  if (m_userOutput.compare("Default") == 0)
+  {
+    std::vector<XOutput> outputs = g_xrandr.GetModes();
+    if (outputs.size() > 0)
+    {
+      m_userOutput = outputs[0].name;
+    }
+  }
+
+  m_userOutput = g_xrandr.GetModes()[0].name;
+
   if(m_nWidth  == newWidth
-  && m_nHeight == newHeight)
+  && m_nHeight == newHeight
+  && m_userOutput.compare(m_currentOutput) == 0)
     return true;
 
   if (!SetWindow(newWidth, newHeight, false, m_userOutput))
@@ -253,33 +266,23 @@ void CWinSystemX11::UpdateResolutions()
 
   bool switchOnOff = CSettings::Get().GetBool("videoscreen.monitorsingle");
   m_userOutput = CSettings::Get().GetString("videoscreen.monitor");
-  if (m_userOutput.Equals("Default"))
+  if (m_userOutput.compare("Default") == 0)
     switchOnOff = false;
 
   if(g_xrandr.Query(true, !switchOnOff))
   {
-    // check if the monitor is connected
-    // might take a while when connected to a receiver
-    XbmcThreads::EndTime timeout(3000);
     XOutput *out = NULL;
-    while (!m_userOutput.Equals("Default") && !timeout.IsTimePast())
+    if (m_userOutput.compare("Default") != 0)
     {
       out = g_xrandr.GetOutput(m_userOutput);
       if (out)
       {
         XMode mode = g_xrandr.GetCurrentMode(m_userOutput);
-        if (mode.isCurrent || switchOnOff)
-          break;
-        else
+        if (!mode.isCurrent && !switchOnOff)
         {
           out = NULL;
-          break;
         }
       }
-
-      Sleep(500);
-      if (!g_xrandr.Query(true, !switchOnOff))
-        break;
     }
     if (!out)
     {
@@ -287,17 +290,16 @@ void CWinSystemX11::UpdateResolutions()
       out = g_xrandr.GetOutput(m_userOutput);
     }
 
-    // switch on output
-    if(switchOnOff)
-      g_xrandr.TurnOnOutput(m_userOutput);
-
-    // switch off other outputs if desired
     if (switchOnOff)
     {
+      // switch on output
+      g_xrandr.TurnOnOutput(m_userOutput);
+
+      // switch off other outputs
       std::vector<XOutput> outputs = g_xrandr.GetModes();
       for (int i=0; i<outputs.size(); i++)
       {
-        if (outputs[i].name.Equals(m_userOutput))
+        if (outputs[i].name.Equals(m_userOutput.c_str()))
           continue;
         g_xrandr.TurnOffOutput(outputs[i].name);
       }
@@ -367,7 +369,7 @@ void CWinSystemX11::UpdateResolutions()
 
       CLog::Log(LOGINFO, "Pixel Ratio: %f", res.fPixelRatio);
 
-      res.strMode.Format("%s: %s @ %.2fHz", out->name.c_str(), mode.name.c_str(), mode.hz);
+      res.strMode      = StringUtils::Format("%s: %s @ %.2fHz", out->name.c_str(), mode.name.c_str(), mode.hz);
       res.strOutput    = out->name;
       res.strId        = mode.id;
       res.iSubtitles   = (int)(0.965*mode.h);
@@ -435,7 +437,7 @@ void CWinSystemX11::GetConnectedOutputs(std::vector<CStdString> *outputs)
 
 bool CWinSystemX11::IsCurrentOutput(CStdString output)
 {
-  return output.Equals("Default") || m_currentOutput.Equals(output);
+  return (output.Equals("Default")) || (m_currentOutput.compare(output) == 0);
 }
 
 bool CWinSystemX11::IsSuitableVisual(XVisualInfo *vInfo)
@@ -624,30 +626,6 @@ void CWinSystemX11::NotifyAppFocusChange(bool bGaining)
     m_bIgnoreNextFocusMessage = false;
 }
 
-void CWinSystemX11::NotifyMouseCoverage(bool covered)
-{
-  if (!m_bFullScreen || !m_mainWindow)
-    return;
-
-  if (covered && !m_bIsGrabbed)
-  {
-    int result = -1;
-    while (result != GrabSuccess && result != AlreadyGrabbed)
-    {
-      result = XGrabPointer(m_dpy, m_mainWindow, True, ButtonPressMask, GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
-      XbmcThreads::ThreadSleep(100);
-    }
-    XGrabKeyboard(m_dpy, m_mainWindow, True, GrabModeAsync, GrabModeAsync, CurrentTime);
-    m_bIsGrabbed = true;
-  }
-  else if (!covered && m_bIsGrabbed)
-  {
-    XUngrabKeyboard(m_dpy, CurrentTime);
-    XUngrabPointer(m_dpy, CurrentTime);
-    m_bIsGrabbed = false;
-  }
-}
-
 bool CWinSystemX11::Minimize()
 {
   m_bWasFullScreenBeforeMinimize = m_bFullScreen;
@@ -713,34 +691,14 @@ void CWinSystemX11::CheckDisplayEvents()
 #endif
 }
 
-void CWinSystemX11::NotifyXRREvent(bool poll)
+void CWinSystemX11::NotifyXRREvent()
 {
-  // we may not get an event if desired monitor becomes available
-  // hence we need to poll
-  if (poll)
-  {
-    CStdString output = CSettings::Get().GetString("videoscreen.monitor");
-    if (output.Equals(m_currentOutput) || output.Equals("Default"))
-      return;
-
-    int numScreens = XScreenCount(m_dpy);
-    g_xrandr.SetNumScreens(numScreens);
-    g_xrandr.Query(true);
-    if (!g_xrandr.IsOutputConnected(output))
-      return;
-
-    // if output is turned off by user, respect it
-    XMode mode = g_xrandr.GetCurrentMode(output);
-    if (!mode.isCurrent)
-      return;
-  }
-
-  CLog::Log(LOGDEBUG, "%s - notify display reset event, poll: %d", __FUNCTION__, poll);
+  CLog::Log(LOGDEBUG, "%s - notify display reset event", __FUNCTION__);
   m_windowDirty = true;
 
   CSingleLock lock(g_graphicsContext);
 
-  if (!g_xrandr.Query(!poll))
+  if (!g_xrandr.Query(true))
   {
     CLog::Log(LOGERROR, "WinSystemX11::RefreshWindow - failed to query xrandr");
     return;
@@ -804,7 +762,7 @@ void CWinSystemX11::OnLostDevice()
   // fail safe timer
   m_dpyLostTime = CurrentHostCounter();
 #else
-  CWinEvents::SetXRRFailSafeTimer(3000);
+  CWinEventsX11Imp::SetXRRFailSafeTimer(3000);
 #endif
 }
 
@@ -837,14 +795,14 @@ bool CWinSystemX11::EnableFrameLimiter()
   return m_minimized;
 }
 
-bool CWinSystemX11::SetWindow(int width, int height, bool fullscreen, const CStdString &output)
+bool CWinSystemX11::SetWindow(int width, int height, bool fullscreen, const std::string &output)
 {
   bool changeWindow = false;
   bool changeSize = false;
   bool mouseActive = false;
   float mouseX, mouseY;
 
-  if (m_mainWindow && ((m_bFullScreen != fullscreen) || !m_currentOutput.Equals(output) || m_windowDirty))
+  if (m_mainWindow && ((m_bFullScreen != fullscreen) || m_currentOutput.compare(output) != 0 || m_windowDirty))
   {
     mouseActive = g_Mouse.IsActive();
     if (mouseActive)
@@ -926,8 +884,8 @@ bool CWinSystemX11::SetWindow(int width, int height, bool fullscreen, const CStd
 
     swa.override_redirect = False;
     swa.border_pixel = 0;
-    swa.event_mask = 0;
-    mask = CWBackPixel | CWBorderPixel | CWColormap | CWOverrideRedirect | CWColormap;
+    swa.event_mask = ExposureMask;
+    mask = CWBackPixel | CWBorderPixel | CWColormap | CWOverrideRedirect | CWColormap | CWEventMask;
 
     m_glWindow = XCreateWindow(m_dpy, m_mainWindow,
                     0, 0, width, height, 0, vi->depth,
@@ -953,13 +911,13 @@ bool CWinSystemX11::SetWindow(int width, int height, bool fullscreen, const CStd
     XDefineCursor(m_dpy,m_mainWindow, m_invisibleCursor);
 
     //init X11 events
-    CWinEvents::Init(m_dpy, m_mainWindow);
+    CWinEventsX11Imp::Init(m_dpy, m_mainWindow);
 
     changeWindow = true;
     changeSize = true;
   }
 
-  if (!CWinEvents::HasStructureChanged() && ((width != m_nWidth) || (height != m_nHeight)))
+  if (!CWinEventsX11Imp::HasStructureChanged() && ((width != m_nWidth) || (height != m_nHeight)))
   {
     changeSize = true;
   }
@@ -1018,22 +976,8 @@ bool CWinSystemX11::SetWindow(int width, int height, bool fullscreen, const CStd
       XWarpPointer(m_dpy, None, m_mainWindow, 0, 0, 0, 0, mouseX*width, mouseY*height);
     }
 
-    if (fullscreen)
-    {
-      int result = -1;
-      while (result != GrabSuccess && result != AlreadyGrabbed)
-      {
-        result = XGrabPointer(m_dpy, m_mainWindow, True, ButtonPressMask, GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
-        XbmcThreads::ThreadSleep(100);
-      }
-      XGrabKeyboard(m_dpy, m_mainWindow, True, GrabModeAsync, GrabModeAsync, CurrentTime);
-      m_bIsGrabbed = true;
-    }
-    else
-      m_bIsGrabbed = false;
-
     CDirtyRegionList dr;
-    RefreshGlxContext(!m_currentOutput.Equals(output));
+    RefreshGlxContext(m_currentOutput.compare(output) != 0);
     XSync(m_dpy, FALSE);
     g_graphicsContext.Clear(0);
     g_graphicsContext.Flip(dr);

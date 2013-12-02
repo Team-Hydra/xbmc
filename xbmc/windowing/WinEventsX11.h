@@ -25,23 +25,30 @@
 #include "threads/SystemClock.h"
 #include <map>
 
-class CWinEventsX11 : public CWinEventsBase
+class CWinEventsX11 : public IWinEvents
 {
 public:
-  CWinEventsX11();
-  virtual ~CWinEventsX11();
+  virtual bool MessagePump();
+  virtual size_t GetQueueSize();
+};
+
+class CWinEventsX11Imp
+{
+public:
+  CWinEventsX11Imp();
+  virtual ~CWinEventsX11Imp();
   static bool Init(Display *dpy, Window win);
   static void Quit();
   static bool HasStructureChanged();
   static void PendingResize(int width, int height);
   static void SetXRRFailSafeTimer(int millis);
   static bool MessagePump();
+  static size_t GetQueueSize();
 
 protected:
   static XBMCKey LookupXbmcKeySym(KeySym keysym);
   static bool ProcessKey(XBMC_Event &event);
-  static bool ProcessShortcuts(XBMC_Event& event);
-  static CWinEventsX11 *WinEvents;
+  static CWinEventsX11Imp *WinEvents;
   Display *m_display;
   Window m_window;
   Atom m_wmDeleteMessage;
@@ -54,6 +61,5 @@ protected:
   bool m_structureChanged;
   int m_RREventBase;
   XbmcThreads::EndTime m_xrrFailSafeTimer;
-  XbmcThreads::EndTime m_xrrPollTimer;
   bool m_xrrEventPending;
 };

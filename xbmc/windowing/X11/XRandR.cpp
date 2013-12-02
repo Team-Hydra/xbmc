@@ -27,6 +27,7 @@
 #include "system.h"
 #include "PlatformInclude.h"
 #include "utils/XBMCTinyXML.h"
+#include "utils/StringUtils.h"
 #include "../xbmc/utils/log.h"
 #include "threads/SystemClock.h"
 
@@ -73,7 +74,7 @@ bool CXRandR::Query(bool force, int screennum, bool ignoreoff)
   CStdString cmd;
   cmd  = getenv("XBMC_BIN_HOME");
   cmd += "/xbmc-xrandr";
-  cmd.AppendFormat(" -q --screen %d", screennum);
+  cmd = StringUtils::Format("%s -q --screen %d", cmd.c_str(), screennum);
 
   FILE* file = popen(cmd.c_str(),"r");
   if (!file)
@@ -103,8 +104,7 @@ bool CXRandR::Query(bool force, int screennum, bool ignoreoff)
   {
     XOutput xoutput;
     xoutput.name = output->Attribute("name");
-    xoutput.name.TrimLeft(" \n\r\t");
-    xoutput.name.TrimRight(" \n\r\t");
+    StringUtils::Trim(xoutput.name);
     xoutput.isConnected = (strcasecmp(output->Attribute("connected"), "true") == 0);
     xoutput.screen = screennum;
     xoutput.w = (output->Attribute("w") != NULL ? atoi(output->Attribute("w")) : 0);
@@ -156,7 +156,7 @@ bool CXRandR::TurnOffOutput(CStdString name)
   CStdString cmd;
   cmd  = getenv("XBMC_BIN_HOME");
   cmd += "/xbmc-xrandr";
-  cmd.AppendFormat(" --screen %d --output %s --off", output->screen, name.c_str());
+  cmd = StringUtils::Format("%s --screen %d --output %s --off", cmd.c_str(), output->screen, name.c_str());
 
   int status = system(cmd.c_str());
   if (status == -1)
@@ -398,11 +398,9 @@ void CXRandR::LoadCustomModeLinesToAllOutputs(void)
   for (TiXmlElement* modeline = pRootElement->FirstChildElement("modeline"); modeline; modeline = modeline->NextSiblingElement("modeline"))
   {
     name = modeline->Attribute("label");
-    name.TrimLeft(" \n\t\r");
-    name.TrimRight(" \n\t\r");
+    StringUtils::Trim(name);
     strModeLine = modeline->FirstChild()->Value();
-    strModeLine.TrimLeft(" \n\t\r");
-    strModeLine.TrimRight(" \n\t\r");
+    StringUtils::Trim(strModeLine);
     if (getenv("XBMC_BIN_HOME"))
     {
       snprintf(cmd, sizeof(cmd), "%s/xbmc-xrandr --newmode \"%s\" %s > /dev/null 2>&1", getenv("XBMC_BIN_HOME"),

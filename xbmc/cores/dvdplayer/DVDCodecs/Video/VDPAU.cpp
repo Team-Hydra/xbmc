@@ -480,10 +480,21 @@ CDecoder::CDecoder() : m_vdpauOutput(&m_inMsgEvent)
   m_vdpauConfigured = false;
   m_hwContext.bitstream_buffers_allocated = 0;
   m_DisplayState = VDPAU_OPEN;
+  m_vdpauConfig.context = 0;
 }
 
 bool CDecoder::Open(AVCodecContext* avctx, const enum PixelFormat, unsigned int surfaces)
 {
+#ifndef GL_NV_vdpau_interop
+  CLog::Log(LOGNOTICE, "VDPAU: compilation without required extension GL_NV_vdpau_interop");
+  return false;
+#endif
+  if (!g_Windowing.IsExtSupported("GL_NV_vdpau_interop"))
+  {
+    CLog::Log(LOGNOTICE, "VDPAU: required extension GL_NV_vdpau_interop not found");
+    return false;
+  }
+
   if(avctx->coded_width  == 0
   || avctx->coded_height == 0)
   {
@@ -713,6 +724,9 @@ int CDecoder::Check(AVCodecContext* avctx)
     CSingleLock lock(m_DecoderSection);
 
     FiniVDPAUOutput();
+    if (m_vdpauConfig.context)
+      m_vdpauConfig.context->Release();
+    m_vdpauConfig.context = 0;
 
     if (CVDPAUContext::EnsureContext(&m_vdpauConfig.context))
     {
@@ -1092,7 +1106,9 @@ int CDecoder::Decode(AVCodecContext *avctx, AVFrame *pFrame)
   while (!retval)
   {
     // first fill the buffers to keep vdpau busy
-    if (decoded < 3)
+    // mixer will run with decoded >= 2. output is limited by number of output surfaces
+    // In case mixer is bypassed we limit by looking at processed
+    if (decoded < 3 && processed < 3)
     {
       retval |= VC_BUFFER;
     }
@@ -1130,7 +1146,7 @@ int CDecoder::Decode(AVCodecContext *avctx, AVFrame *pFrame)
       msg->Release();
     }
 
-    if (decoded < 3)
+    if (decoded < 3 && processed < 3)
     {
       retval |= VC_BUFFER;
     }
@@ -1664,11 +1680,6 @@ void CMixer::CreateVdpauMixer()
                                 parameter_values,
                                 &m_videoMixer);
   CheckStatus(vdp_st, __LINE__);
-
-  // create 3 pitches of black lines needed for clipping top
-  // and bottom lines when de-interlacing
-  m_BlackBar = new uint32_t[3*m_config.outWidth];
-  memset(m_BlackBar, 0, 3*m_config.outWidth*sizeof(uint32_t));
 
 }
 
@@ -2206,6 +2217,8 @@ void CMixer::Init()
   m_Sharpness = 0.0;
   m_DeintMode = 0;
   m_Deint = 0;
+  m_Upscale = 0;
+  m_SeenInterlaceFlag = false;
   m_ColorMatrix = 0;
   m_PostProc = false;
   m_vdpError = false;
@@ -2224,8 +2237,6 @@ void CMixer::Uninit()
     m_outputSurfaces.pop();
   }
   m_config.context->GetProcs().vdp_video_mixer_destroy(m_videoMixer);
-
-  delete [] m_BlackBar;
 }
 
 void CMixer::Flush()
@@ -2276,6 +2287,7 @@ void CMixer::InitCycle()
   EDEINTERLACEMODE   mode = CMediaSettings::Get().GetCurrentVideoSettings().m_DeinterlaceMode;
   EINTERLACEMETHOD method = GetDeinterlacingMethod();
   bool interlaced = m_mixerInput[1].DVDPic.iFlags & DVP_FLAG_INTERLACED;
+  m_SeenInterlaceFlag |= interlaced;
 
   if (!(flags & DVP_FLAG_NO_POSTPROC) &&
       (mode == VS_DEINTERLACEMODE_FORCE ||
@@ -2357,6 +2369,12 @@ void CMixer::InitCycle()
     m_processPicture.outputSurface = m_outputSurfaces.front();
     m_mixerInput[1].DVDPic.iWidth = m_config.outWidth;
     m_mixerInput[1].DVDPic.iHeight = m_config.outHeight;
+    if (m_SeenInterlaceFlag)
+    {
+      double ratio = (double)m_mixerInput[1].DVDPic.iDisplayHeight / m_mixerInput[1].DVDPic.iHeight;
+      m_mixerInput[1].DVDPic.iHeight -= 6;
+      m_mixerInput[1].DVDPic.iDisplayHeight = lrint(ratio*m_mixerInput[1].DVDPic.iHeight) & ~1;
+    }
   }
   else
   {
@@ -2445,8 +2463,8 @@ void CMixer::ProcessPicture()
         past_surfaces[1] = m_mixerInput[2].videoSurface;
       }
       past_surfaces[0] = m_mixerInput[1].videoSurface;
-      futu_surfaces[0] = m_mixerInput[1].videoSurface;
-      futu_surfaces[1] = m_mixerInput[1].videoSurface;
+      futu_surfaces[0] = m_mixerInput[0].videoSurface;
+      futu_surfaces[1] = m_mixerInput[0].videoSurface;
 
       if (m_mixerInput[0].DVDPic.pts != DVD_NOPTS_VALUE &&
           m_mixerInput[1].DVDPic.pts != DVD_NOPTS_VALUE)
@@ -2491,32 +2509,6 @@ void CMixer::ProcessPicture()
                                 0,
                                 NULL);
   CheckStatus(vdp_st, __LINE__);
-
-  if (m_mixerfield != VDP_VIDEO_MIXER_PICTURE_STRUCTURE_FRAME)
-  {
-    // in order to clip top and bottom lines when de-interlacing
-    // we black those lines as a work around for not working
-    // background colour using the mixer
-    // pixel perfect is preferred over overscanning or zooming
-
-    VdpRect clipRect = destRect;
-    clipRect.y1 = clipRect.y0 + 2;
-    uint32_t *data[] = {m_BlackBar};
-    uint32_t pitches[] = {destRect.x1};
-    vdp_st = m_config.context->GetProcs().vdp_output_surface_put_bits_native(m_processPicture.outputSurface,
-                                            (void**)data,
-                                            pitches,
-                                            &clipRect);
-    CheckStatus(vdp_st, __LINE__);
-
-    clipRect = destRect;
-    clipRect.y0 = clipRect.y1 - 2;
-    vdp_st = m_config.context->GetProcs().vdp_output_surface_put_bits_native(m_processPicture.outputSurface,
-                                            (void**)data,
-                                            pitches,
-                                            &clipRect);
-    CheckStatus(vdp_st, __LINE__);
-  }
 }
 
 
@@ -3047,7 +3039,12 @@ CVdpauRenderPicture* COutput::ProcessMixerPicture()
       GLMapSurfaces();
       retPic->sourceIdx = procPic.outputSurface;
       retPic->texture[0] = m_bufferPool.glOutputSurfaceMap[procPic.outputSurface].texture[0];
-      retPic->crop = CRect(0,0,0,0);
+      retPic->texWidth = m_config.outWidth;
+      retPic->texHeight = m_config.outHeight;
+      retPic->crop.x1 = 0;
+      retPic->crop.y1 = (m_config.outHeight - retPic->DVDPic.iHeight) / 2;
+      retPic->crop.x2 = m_config.outWidth;
+      retPic->crop.y2 = m_config.outHeight - retPic->crop.y1;
     }
     else
     {
@@ -3345,8 +3342,6 @@ bool COutput::GLInit()
 #endif
 
 #ifdef GL_NV_vdpau_interop
-  if (glewIsSupported("GL_NV_vdpau_interop"))
-  {
     if (!glVDPAUInitNV)
       glVDPAUInitNV    = (PFNGLVDPAUINITNVPROC)glXGetProcAddress((GLubyte *) "glVDPAUInitNV");
     if (!glVDPAUFiniNV)
@@ -3368,17 +3363,6 @@ bool COutput::GLInit()
     if (!glVDPAUGetSurfaceivNV)
       glVDPAUGetSurfaceivNV = (PFNGLVDPAUGETSURFACEIVNVPROC)glXGetProcAddress((GLubyte *) "glVDPAUGetSurfaceivNV");
 
-    CLog::Log(LOGNOTICE, "VDPAU::COutput GL interop supported");
-  }
-  else
-#endif
-  {
-    // TODO should be detected before vdpau is opened, though very unlikely
-    // that this code is hit
-    CLog::Log(LOGERROR, "VDPAU::COutput driver does not support GL_NV_vdpau_interop");
-  }
-
-#ifdef GL_NV_vdpau_interop
   while (glGetError() != GL_NO_ERROR);
   glVDPAUInitNV(reinterpret_cast<void*>(m_config.context->GetDevice()), reinterpret_cast<void*>(m_config.context->GetProcs().vdp_get_proc_address));
   if (glGetError() != GL_NO_ERROR)

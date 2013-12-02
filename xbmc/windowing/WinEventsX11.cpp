@@ -44,7 +44,7 @@
 #include "input/SDLJoystick.h"
 #endif
 
-CWinEventsX11* CWinEventsX11::WinEvents = 0;
+CWinEventsX11Imp* CWinEventsX11Imp::WinEvents = 0;
 
 static uint32_t SymMappingsX11[][2] =
 {
@@ -157,8 +157,17 @@ static uint32_t SymMappingsX11[][2] =
 , {XF86XK_AudioForward, XBMCK_FASTFORWARD}
 };
 
+bool CWinEventsX11::MessagePump()
+{
+  return CWinEventsX11Imp::MessagePump();
+}
 
-CWinEventsX11::CWinEventsX11()
+size_t CWinEventsX11::GetQueueSize()
+{
+  return CWinEventsX11Imp::GetQueueSize();
+}
+
+CWinEventsX11Imp::CWinEventsX11Imp()
 {
   m_display = 0;
   m_window = 0;
@@ -166,7 +175,7 @@ CWinEventsX11::CWinEventsX11()
   m_keybuf_len = 0;
 }
 
-CWinEventsX11::~CWinEventsX11()
+CWinEventsX11Imp::~CWinEventsX11Imp()
 {
   if (m_keybuf);
   {
@@ -190,12 +199,12 @@ CWinEventsX11::~CWinEventsX11()
   m_symLookupTable.clear();
 }
 
-bool CWinEventsX11::Init(Display *dpy, Window win)
+bool CWinEventsX11Imp::Init(Display *dpy, Window win)
 {
   if (WinEvents)
     return true;
 
-  WinEvents = new CWinEventsX11();
+  WinEvents = new CWinEventsX11Imp();
   WinEvents->m_display = dpy;
   WinEvents->m_window = win;
   WinEvents->m_keybuf_len = 32*sizeof(char);
@@ -204,7 +213,6 @@ bool CWinEventsX11::Init(Display *dpy, Window win)
   WinEvents->m_wmDeleteMessage = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
   WinEvents->m_structureChanged = false;
   WinEvents->m_xrrEventPending = false;
-  WinEvents->m_xrrPollTimer.Set(3000);
 
   // open input method
   char *old_locale = NULL, *old_modifiers = NULL;
@@ -271,13 +279,17 @@ bool CWinEventsX11::Init(Display *dpy, Window win)
 #if defined(HAS_XRANDR)
   int iReturn;
   XRRQueryExtension(WinEvents->m_display, &WinEvents->m_RREventBase, &iReturn);
-  XRRSelectInput(WinEvents->m_display, WinEvents->m_window, RRScreenChangeNotifyMask);
+  int numScreens = XScreenCount(WinEvents->m_display);
+  for (int i = 0; i < numScreens; i++)
+  {
+    XRRSelectInput(WinEvents->m_display, RootWindow(WinEvents->m_display, i), RRScreenChangeNotifyMask | RRCrtcChangeNotifyMask | RROutputChangeNotifyMask | RROutputPropertyNotifyMask);
+  }
 #endif
 
   return true;
 }
 
-void CWinEventsX11::Quit()
+void CWinEventsX11Imp::Quit()
 {
   if (!WinEvents)
     return;
@@ -286,7 +298,7 @@ void CWinEventsX11::Quit()
   WinEvents = 0;
 }
 
-bool CWinEventsX11::HasStructureChanged()
+bool CWinEventsX11Imp::HasStructureChanged()
 {
   if (!WinEvents)
     return false;
@@ -296,7 +308,7 @@ bool CWinEventsX11::HasStructureChanged()
   return ret;
 }
 
-void CWinEventsX11::SetXRRFailSafeTimer(int millis)
+void CWinEventsX11Imp::SetXRRFailSafeTimer(int millis)
 {
   if (!WinEvents)
     return;
@@ -305,7 +317,7 @@ void CWinEventsX11::SetXRRFailSafeTimer(int millis)
   WinEvents->m_xrrEventPending = true;
 }
 
-bool CWinEventsX11::MessagePump()
+bool CWinEventsX11Imp::MessagePump()
 {
   if (!WinEvents)
     return false;
@@ -318,6 +330,26 @@ bool CWinEventsX11::MessagePump()
   {
     memset(&xevent, 0, sizeof (XEvent));
     XNextEvent(WinEvents->m_display, &xevent);
+
+#if defined(HAS_XRANDR)
+    if (WinEvents && (xevent.type == WinEvents->m_RREventBase + RRScreenChangeNotify))
+    {
+      XRRUpdateConfiguration(&xevent);
+      if (xevent.xgeneric.serial != serial)
+        g_Windowing.NotifyXRREvent();
+      WinEvents->m_xrrEventPending = false;
+      serial = xevent.xgeneric.serial;
+      continue;
+    }
+    else if (WinEvents && (xevent.type == WinEvents->m_RREventBase + RRNotify))
+    {
+      if (xevent.xgeneric.serial != serial)
+        g_Windowing.NotifyXRREvent();
+      WinEvents->m_xrrEventPending = false;
+      serial = xevent.xgeneric.serial;
+      continue;
+    }
+#endif
 
     if (XFilterEvent(&xevent, WinEvents->m_window))
       continue;
@@ -506,16 +538,12 @@ bool CWinEventsX11::MessagePump()
 
       case EnterNotify:
       {
-        if (xevent.xcrossing.mode ==  NotifyNormal)
-          g_Windowing.NotifyMouseCoverage(true);
         break;
       }
 
       // lose mouse coverage
       case LeaveNotify:
       {
-        if (xevent.xcrossing.mode ==  NotifyNormal)
-          g_Windowing.NotifyMouseCoverage(false);
         g_Mouse.SetActive(false);
         break;
       }
@@ -566,18 +594,6 @@ bool CWinEventsX11::MessagePump()
         break;
       }
     }// switch event.type
-
-#if defined(HAS_XRANDR)
-    if (WinEvents && (xevent.type == WinEvents->m_RREventBase + RRScreenChangeNotify))
-    {
-      XRRUpdateConfiguration(&xevent);
-      if (xevent.xgeneric.serial != serial)
-        g_Windowing.NotifyXRREvent();
-      WinEvents->m_xrrEventPending = false;
-      serial = xevent.xgeneric.serial;
-    }
-#endif
-
   }// while
 
 #if defined(HAS_XRANDR)
@@ -586,11 +602,6 @@ bool CWinEventsX11::MessagePump()
     CLog::Log(LOGERROR,"CWinEventsX11::MessagePump - missed XRR Events");
     g_Windowing.NotifyXRREvent();
     WinEvents->m_xrrEventPending = false;
-  }
-  else if (!g_application.m_pPlayer->IsPlaying() && WinEvents && WinEvents->m_xrrPollTimer.IsTimePast())
-  {
-    g_Windowing.NotifyXRREvent(true);
-    WinEvents->m_xrrPollTimer.Set(3000);
   }
 #endif
 
@@ -619,7 +630,17 @@ bool CWinEventsX11::MessagePump()
   return ret;
 }
 
-bool CWinEventsX11::ProcessKey(XBMC_Event &event)
+size_t CWinEventsX11Imp::GetQueueSize()
+{
+  int ret = 0;
+
+  if (WinEvents)
+    ret = XPending(WinEvents->m_display);
+
+  return ret;
+}
+
+bool CWinEventsX11Imp::ProcessKey(XBMC_Event &event)
 {
   if (event.type == XBMC_KEYDOWN)
   {
@@ -657,10 +678,6 @@ bool CWinEventsX11::ProcessKey(XBMC_Event &event)
         break;
     }
     event.key.keysym.mod = (XBMCMod)WinEvents->m_keymodState;
-
-    bool ret = ProcessShortcuts(event);
-    if (ret)
-      return ret;
   }
   else if (event.type == XBMC_KEYUP)
   {
@@ -702,24 +719,7 @@ bool CWinEventsX11::ProcessKey(XBMC_Event &event)
   return g_application.OnEvent(event);
 }
 
-bool CWinEventsX11::ProcessShortcuts(XBMC_Event& event)
-{
-  if (event.key.keysym.mod & XBMCKMOD_ALT)
-  {
-    switch(event.key.keysym.sym)
-    {
-      case XBMCK_TAB:  // ALT+TAB to minimize/hide
-        g_application.Minimize();
-        return true;
-
-      default:
-        return false;
-    }
-  }
-  return false;
-}
-
-XBMCKey CWinEventsX11::LookupXbmcKeySym(KeySym keysym)
+XBMCKey CWinEventsX11Imp::LookupXbmcKeySym(KeySym keysym)
 {
   // try direct mapping first
   std::map<uint32_t, uint32_t>::iterator it;
